@@ -12,7 +12,6 @@ provider:
 custom:
   stage: ${sls:stage}
   resourcePrefix: ${self:custom.stage}-${self:service}
-  api-swagger: ${file(open-api.yaml)}
 
 
 resources:
