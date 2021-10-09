@@ -1,0 +1,114 @@
+
+service: codeless-api-sqs
+
+frameworkVersion: '2'
+
+provider:
+  name: aws
+  runtime: python3.8
+  lambdaHashingVersion: 20201221
+  endpointType: regional
+
+custom:
+  stage: ${sls:stage}
+  resourcePrefix: ${self:custom.stage}-${self:service}
+  api-swagger: ${file(open-api.yaml)}
+
+
+resources:
+  Resources:
+    apigSqsSendmessageRole:
+      Type: AWS::IAM::Role
+      Properties:
+        Description: Provides access to APIGW to call sqs::SendMessage
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Sid: AllowApiGatewayServiceToAssumeRole
+              Effect: Allow
+              Action:
+                - 'sts:AssumeRole'
+              Principal:
+                Service:
+                  - apigateway.amazonaws.com
+        Policies:
+          - PolicyName: ApiSqsSendMessage
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: 
+                    - "sqs:SendMessage"
+                  Resource:
+                    - !GetAtt sqsQueue.Arn
+
+    sqsQueue:
+      Type: AWS::SQS::Queue
+
+    apiGw:
+      Type: AWS::ApiGateway::RestApi
+      Properties:
+        Name: ${self:custom.resourcePrefix}
+        EndpointConfiguration:
+          Types:
+            - REGIONAL
+  
+    apiSQSMethod:
+      Type: AWS::ApiGateway::Method
+      Properties:
+        AuthorizationType: None
+        HttpMethod: POST
+        ResourceId: !GetAtt apiGw.RootResourceId
+        RestApiId: !Ref apiGw
+        MethodResponses:
+          - StatusCode: 200
+            ResponseModels:
+              application/json: Empty
+          - StatusCode: 404
+            ResponseModels:
+              application/json: Empty
+        Integration:
+          IntegrationHttpMethod: POST
+          Type: AWS
+          Credentials: !GetAtt apigSqsSendmessageRole.Arn
+          Uri: 
+            !Join 
+              - "/"
+              - - 'arn:aws:apigateway:${aws:region}:sqs:path'
+                - ${aws:accountId}
+                - !GetAtt sqsQueue.QueueName
+          PassthroughBehavior: NEVER
+          RequestParameters:
+            integration.request.header.Content-Type: "'application/x-www-form-urlencoded'"
+          RequestTemplates:
+            application/json: "Action=SendMessage&MessageBody=$input.json('$')"
+          IntegrationResponses:
+            - StatusCode: "200"
+              ResponseTemplates:
+                application/json: |-
+                  #set ($root=$input.path('$')){
+                    "resuest_id": "$root.SendMessageResponse.ResponseMetadata.RequestId",
+                    "message_id": "$root.SendMessageResponse.SendMessageResult.MessageId",
+                    "accepted": "ok"
+                  }
+            - StatusCode: "400"
+              ResponseTemplates:
+                application/json: |-
+                  {
+                    "error_code": 404,
+                    "error_message": "Unable to complete Request"
+                  }
+    apiGwStage:
+      Type: AWS::ApiGateway::Deployment
+      Properties:
+        RestApiId: !Ref apiGw
+        StageName: ${sls:stage}
+      DependsOn: 
+        - apiSQSMethod
+        - sqsQueue
+
+  Outputs:
+    apiGwID:
+      Description: Id of the Api Gateway
+      Value: !Ref apiGw
+  
